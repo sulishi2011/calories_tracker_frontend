@@ -13,6 +13,10 @@ void main() {
   runApp(CalorieTrackerApp());
 }
 
+class AppConfig {
+  static const String backendUrl = 'http://23.105.196.176:3000';
+}
+
 class CalorieTrackerApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -232,7 +236,7 @@ class _HomePageState extends State<HomePage> {
 // -------
 
   void _uploadFile(List<int> fileBytes, String fileName) async {
-    var uri = Uri.parse('http://192.168.2.34:3000/analyzeFoodIntake');
+    var uri = Uri.parse(AppConfig.backendUrl + '/analyzeFoodIntake');
     var request = http.MultipartRequest('POST', uri)
       ..files.add(http.MultipartFile.fromBytes(
         'audioFile',
@@ -280,7 +284,7 @@ class _HomePageState extends State<HomePage> {
 
   // Make sure this function expects two arguments: File and fileName
   Future<void> _uploadFileForNonWeb(File file, String fileName) async {
-    String backendUrl = 'http://192.168.2.34:3000/analyzeFoodIntake';
+    String backendUrl = AppConfig.backendUrl + '/analyzeFoodIntake';
     print('Uploading file to: $backendUrl');
     print('File to upload: ${file.path}, File name: $fileName');
 
@@ -380,7 +384,7 @@ class _HomePageState extends State<HomePage> {
 
   Future<List<dynamic>> fetchMealDetails() async {
     final response = await http.post(
-      Uri.parse('http://192.168.2.34:3000/analyzeTextInput'),
+      Uri.parse(AppConfig.backendUrl + '/analyzeTextInput'),
       headers: <String, String>{
         'Content-Type': 'application/json; charset=UTF-8',
       },

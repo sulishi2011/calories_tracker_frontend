@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:html' as html;
 import 'package:path/path.dart' as path;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -8,13 +9,15 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart'; 
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
+import 'js_interop.dart' as jsInterop; // Import your JS interop file
+import 'dart:js_util' as js_util;
 
 void main() {
   runApp(CalorieTrackerApp());
 }
 
 class AppConfig {
-  static const String backendUrl = 'http://23.105.196.176:3000';
+  static const String backendUrl = 'https://vipassana-ai.com:3000';
 }
 
 class CalorieTrackerApp extends StatelessWidget {
@@ -72,180 +75,288 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final TextEditingController _controller = TextEditingController();
-  String _caloriesOutput = '';
   late FlutterSoundRecorder _audioRecorder;
   bool _isRecorderInitialized = false;
   bool _isRecording = false;
+  List<String> _messages = []; // To store messages for UI display
   String _errorMessage = ''; // Add a variable to hold error messages
+  String _caloriesOutput = '';
 
   @override
   void initState() {
     super.initState();
-    _initRecorder();
+    if (!kIsWeb) {
+      _initRecorder();
+    }
   }
 
   @override
   void dispose() {
     if (_audioRecorder.isRecording) {
-      _audioRecorder.stopRecorder();
+      _audioRecorder.stopRecorder().then((_) => _audioRecorder.closeRecorder());
     }
-    _audioRecorder.closeRecorder();
+    _controller.dispose();
     super.dispose();
-  }
-
-  Future<void> _requestPermissions() async {
-    // Check if the microphone permission is already granted
-    var microphonePermissionStatus = await Permission.microphone.status;
-
-    // If not granted, explain why you need it and then request permission
-    if (!microphonePermissionStatus.isGranted) {
-      // Show a dialog or custom UI to explain why you need this permission
-      bool userAgreed = await _showPermissionExplanationDialog();
-      if (userAgreed) {
-        microphonePermissionStatus = await Permission.microphone.request();
-      }
-
-      // Handle the case where the user denies the permission
-      if (microphonePermissionStatus != PermissionStatus.granted) {
-        setState(() {
-          _errorMessage = "Microphone permission is required to record audio.";
-        });
-        // Optionally, guide the user to the settings app
-      }
-    }
-  }
-
-  Future<bool> _showPermissionExplanationDialog() async {
-    // showDialog returns Future<T?> where T is the type of the value that was passed to Navigator.pop
-    // when the dialog was closed.
-    return showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: Text('Microphone Access'),
-        content: Text('This app requires microphone access to record audio notes. Please grant this permission to proceed.'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false), // Pass false when 'Decline' is tapped.
-            child: Text('Decline'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true), // Pass true when 'Allow' is tapped.
-            child: Text('Allow'),
-          ),
-        ],
-      ),
-    ).then((value) => value ?? false); // Ensure a non-nullable bool is returned.
-    // Using .then() to provide a default value of false if null is returned.
   }
 
   Future<void> _initRecorder() async {
     _audioRecorder = FlutterSoundRecorder();
 
     try {
-      await _requestPermissions(); // Ensure permissions are requested
-      await _audioRecorder.openRecorder();
+      await _audioRecorder!.openRecorder();
       _isRecorderInitialized = true;
-      print("Recorder initialized successfully");
+      _addMessage("Recorder initialized successfully");
     } catch (e) {
-      print("Recorder initialization failed: $e");
-      setState(() {
-        _errorMessage = "Recorder initialization failed: $e"; // Update the error message
-      });
+      _addMessage("Recorder initialization failed: $e");
     }
   }
 
-  Future<void> _startRecording() async {
-    // Directly try to start recording without checking for permissions
-    if (!_isRecorderInitialized) {
-      print('Recorder not initialized.');
-      return;
-    }
+ Future<void> startRecordingFromDart() async {
     try {
-      await _audioRecorder.startRecorder(
-        toFile: 'audio_record.mp3',
-        codec: Codec.mp3,
-      );
-    } catch (e) {
-      try {
-        // Fallback to a different codec if MP3 is not supported
-        await _audioRecorder.startRecorder(
-          toFile: 'audio_record.ogg',
-          codec: Codec.ogg,
-        );
-      } catch (e) {
-        print('Failed to start recording with fallback codec: $e');
-        // Handle failure
+      if (kIsWeb) {
+        print('starting recording on web...');
+        // For web, call the JS interop function
+        jsInterop.startRecording();
+      } else {
+        print('Starting recording on mobile...');
+        // For mobile, ensure the recorder is initialized and then start recording
+        if (!_isRecorderInitialized) {
+          await _initRecorder();
+        }
+        String path = await _getFilePath(); // Implement this method based on your file storage logic
+        await _audioRecorder.startRecorder(toFile: path);
       }
+      setState(() {
+        _isRecording = true;
+        _addMessage("Recording started successfully.");
+      });
+      print('Recording has been started successfully.');
+    } catch (e) {
+      _addMessage("Error starting recording: $e");
     }
   }
 
-
-  Future<void> _stopRecording() async {
-      print('Trying to stop recording...');
-      if (!_isRecorderInitialized || !_isRecording) {
-        print('Recorder not initialized or not recording.');
-        return;
-      }
-      try {
-        final pathString = await _audioRecorder.stopRecorder();
-        print('Stop recorder called');
-        if (pathString != null) {
-          print('Recording stopped, file path: $pathString');
-          final File file = File(pathString);
-          // Use the alias `path` for `basename`
-          final String fileName = path.basename(pathString); // Adjusted line
-          print('File name extracted: $fileName');
-          setState(() {
-            _isRecording = false;
-            _caloriesOutput = "Recording saved to: $pathString";
-          });
-          print('Calling _uploadFileForNonWeb with file and fileName');
-
-          // Correctly call _uploadFileForNonWeb with both the file and its name
-          _uploadFileForNonWeb(file, fileName);
-        } else {
-          print("Recording path is null.");
-        }
-      } catch (e) {
-        print('Failed to stop recording: $e');
-        setState(() {
-          _errorMessage = 'Failed to stop recording: $e';
-        });
-      }
-  }
-
-  void _pickFile() async {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.audio);
-
-      if (result != null) {
-        PlatformFile platformFile = result.files.first;
+  Future<void> stopRecordingFromDart() async {
+    try {
+      String? audioUrl;
+      if (kIsWeb) {
+        print('Stopping recording on web...');
+        // For web, stop recording and get the audio URL from JS interop
+        final audioUrl = await js_util.promiseToFuture<String>(jsInterop.stopRecording());
         
-        if (platformFile.path != null) {
-          File file = File(platformFile.path!);
-          String fileName = platformFile.name; // Directly use the file name
-          _uploadFileForNonWeb(file, fileName); // Correctly calling the method
-        } else {
-          print('File path is null.');
+        print('Dart: Recording stopped, received URL: $audioUrl');
+        // Upload the Blob URL recording for web
+        if (audioUrl != null) {
+          print('Uploading blob URL recording for web...');
+          await uploadBlobUrl(audioUrl, "web_recording.webm");
+          print('Dart: Upload complete, releasing blob URL...');
+          // Optionally, release the Blob URL after successful upload
+          jsInterop.releaseBlobUrl(audioUrl);
         }
       } else {
-        print('No file selected.');
+        print('Stopping recording on mobile...');
+        // For mobile, stop the recorder and get the file path
+        audioUrl = await _audioRecorder.stopRecorder();
+        // Upload the file recording for mobile
+        if (audioUrl != null) {
+          print('Uploading file recording for mobile...');
+          await uploadFilePath(audioUrl);
+        }
       }
+      setState(() {
+        _isRecording = false;
+        _addMessage("Recording stopped. URL/File: $audioUrl");
+      });
+      // Optionally, handle the audio URL/file here for playback or upload
+    } catch (e) {
+      _addMessage("Error stopping recording: $e");
+    }
+  } 
+
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      await stopRecordingFromDart();
+    } else {
+      await startRecordingFromDart();
+    }
+    // No need to toggle _isRecording here as it's already done within start/stop methods
+  }
+
+  Future<String?> _startRecordingLogic() async {
+    if (kIsWeb) {
+      try {
+        final stream = await html.window.navigator.mediaDevices?.getUserMedia({'audio': true});
+        jsInterop.startRecording();
+        return null; // Since the file path isn't immediately available
+      } catch (e) {
+        print("Error starting recording: $e");
+        return null;
+      }
+    } else {
+      // Non-web (mobile) logic to start recording.
+      var filePath = 'audioFile.mp3'; // Define the file path for recording.
+      await _audioRecorder.startRecorder(
+        toFile: filePath,
+        codec: Codec.mp3, // Make sure to choose a codec supported by your platform.
+      );
+      return filePath; // Mobile platforms will typically use a file path.
+    }
+  }
+
+  Future<String?> _stopRecordingLogic() async {
+    if (kIsWeb) {
+      try {
+        final audioUrl = await jsInterop.stopRecording();
+        print("Recording stopped, URL: $audioUrl");
+        return audioUrl; // Returning the audio URL for further processing
+      } catch (e) {
+        print("Error stopping recording: $e");
+        return null;
+      }
+    } else {
+      // Non-web (mobile) logic to stop recording.
+      return await _audioRecorder.stopRecorder(); // This returns the file path where recording is saved.
+    }
   }
 
 
-// -------
+  // Simplified message handling
+  void _addMessage(String message) {
+    setState(() => _messages.add(message));
+  }
 
-  void _uploadFile(List<int> fileBytes, String fileName) async {
-    var uri = Uri.parse(AppConfig.backendUrl + '/analyzeFoodIntake');
-    var request = http.MultipartRequest('POST', uri)
+// 给手机端用的逻辑
+
+  Future<String> _getFilePath() async {
+    final dir = await getApplicationDocumentsDirectory(); // Requires path_provider package
+    return "${dir.path}/recording_${DateTime.now().millisecondsSinceEpoch}.mp3";
+  }
+
+  Future<bool> _requestPermissions() async {
+    final status = await Permission.microphone.request();
+    return status == PermissionStatus.granted;
+  }
+
+// blob 转为 字节
+  Future<void> uploadBlobUrl(String blobUrl, String fileName) async {
+    print("Starting to convert blob URL to bytes: $blobUrl");
+    try {
+      final Uint8List? bytes = await jsInterop.blobUrlToUint8List(blobUrl);
+      if (bytes != null) {
+        print("Blob converted to bytes successfully, size: ${bytes.length}");
+        await uploadFileBytes(bytes, fileName);
+        print("upload BlobUrl: Upload successful.");
+      } else {
+        print("Failed to convert blob URL to bytes. Blob URL: $blobUrl");
+        // Consider how to handle this error in your app's context
+      }
+    } catch (e) {
+      print("An error occurred during blob URL upload: $e");
+      // Further error handling
+    }
+  }
+  
+ //--- 新版上传
+
+  Future<void> pickAndUploadFile() async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles();
+
+    if (result != null) {
+      print("Running on Web: $kIsWeb");
+      // If on web, the path is always null. Use bytes instead.
+      if (kIsWeb) {
+        print("Accessing bytes property");
+
+        // Iterate over each picked file
+        for (var file in result.files) {
+          // Ensure the file has bytes since on the web, files do not have a path
+          if (file.bytes != null) {
+            await uploadFileBytes(file.bytes!, file.name);
+          } else {
+            // Handle the case where file.bytes is null
+            print("No data available for file: ${file.name}");
+          }
+        }
+      } else {
+        print("Accessing path property");
+
+        // For non-web platforms, use the file path
+        for (var file in result.files) {
+          if (file.path != null) {
+            await uploadFilePath(file.path!);
+          } else {
+            // Handle the case where file.path is null, which should not happen on non-web platforms
+            print("File path is unavailable for file: ${file.name}");
+          }
+        }
+      }
+    }
+  }
+
+  Future<void> uploadFileBytes(Uint8List fileBytes, String fileName) async {
+    print("Starting to upload file bytes, size: ${fileBytes.length}, fileName: $fileName");
+    var url = Uri.parse('${AppConfig.backendUrl}/analyzeFoodIntake');
+    print("Uploading to URL: $url");
+    var request = http.MultipartRequest('POST', url)
+      ..fields['user'] = 'someone'
       ..files.add(http.MultipartFile.fromBytes(
-        'audioFile',
+        'audioFile', // Field name for the file
         fileBytes,
-        filename: fileName,
+        filename: fileName, // Optional: file name
       ));
 
     var response = await request.send();
+    print("Response status code: ${response.statusCode}");
 
+    if (response.statusCode == 200) {
+      // Decode the response
+      final responseData = await response.stream.toBytes();
+      final responseString = String.fromCharCodes(responseData);
+      print("Response from server: $responseString");
+      final jsonResponse = json.decode(responseString);
+      
+      // Correctly parse the response into MealDetail and TotalCalories
+      List<dynamic> mealDetails = [];
+      for (var item in jsonResponse['meal_intake']) {
+        if (item.containsKey('total_calories')) {
+          mealDetails.add(TotalCalories.fromJson(item));
+        } else {
+          mealDetails.add(MealDetail.fromJson(item));
+        }
+      }
+
+      // Update UI based on parsed data
+      setState(() {
+        _caloriesOutput = mealDetails.fold('Meal Details:\n', (prev, element) {
+          if (element is MealDetail) {
+            return "$prev\nMeal Type: ${element.mealType}, Food: ${element.foodName}, Amount: ${element.amount}, Calories: ${element.calories}";
+          } else if (element is TotalCalories) {
+            return "$prev\nTotal Calories: ${element.totalCalories}";
+          }
+          return prev; // Should not reach here
+        });
+      });
+      print('File uploaded and processed successfully');
+    } else {
+      print("File upload failed, status code: ${response.statusCode}");
+      setState(() {
+        _caloriesOutput = 'Failed to upload file.';
+      });
+    }
+  }
+  
+  Future<void> uploadFilePath(String filePath) async {
+    var url = Uri.parse('${AppConfig.backendUrl}/analyzeFoodIntake');
+    var request = http.MultipartRequest('POST', url)
+      ..fields['user'] = 'someone'
+      ..files.add(await http.MultipartFile.fromPath(
+        'audioFile', // Field name for the file
+        filePath,
+        filename: path.basename(filePath), // Optional: file name
+      ));
+      
+    var response = await request.send();
+    
     if (response.statusCode == 200) {
       // Decode the response
       final responseData = await response.stream.toBytes();
@@ -284,7 +395,7 @@ class _HomePageState extends State<HomePage> {
 
   // Make sure this function expects two arguments: File and fileName
   Future<void> _uploadFileForNonWeb(File file, String fileName) async {
-    String backendUrl = AppConfig.backendUrl + '/analyzeFoodIntake';
+    String backendUrl = '${AppConfig.backendUrl}/analyzeFoodIntake';
     print('Uploading file to: $backendUrl');
     print('File to upload: ${file.path}, File name: $fileName');
 
@@ -381,10 +492,9 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-
   Future<List<dynamic>> fetchMealDetails() async {
     final response = await http.post(
-      Uri.parse(AppConfig.backendUrl + '/analyzeTextInput'),
+      Uri.parse('${AppConfig.backendUrl}/analyzeTextInput'),
       headers: <String, String>{
         'Content-Type': 'application/json; charset=UTF-8',
       },
@@ -416,7 +526,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Calorie Tracker'),
+        title: Text('Calorie Tracker v1.0.3'),
       ),
       body: Container(
         padding: EdgeInsets.all(20),
@@ -436,11 +546,11 @@ class _HomePageState extends State<HomePage> {
             ),
             SizedBox(height: 10),
             ElevatedButton(
-              onPressed: _isRecording ? _stopRecording : _startRecording,
+              onPressed: _toggleRecording,
               child: Text(_isRecording ? 'Stop Recording' : 'Start Recording'),
             ),
             ElevatedButton(
-              onPressed: _pickFile,
+              onPressed: pickAndUploadFile,
               child: Text('Upload Audio'),
             ),
             ElevatedButton(
@@ -454,6 +564,12 @@ class _HomePageState extends State<HomePage> {
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Text(_errorMessage, style: TextStyle(color: Colors.red)),
+            ),
+            // Display each message in the _messages list
+            for (var message in _messages)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(message),
             ),
           ],
         ),
